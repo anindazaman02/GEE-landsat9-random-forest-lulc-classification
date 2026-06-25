@@ -1,0 +1,150 @@
+var L9 = ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")  
+
+var image = L9.filterBounds(aoi)
+            .filterDate('2024-01-10', '2024-03-25')
+            .filterMetadata ('CLOUD_COVER','less_than',2)
+            .mean()
+            .clip(aoi)
+
+
+Map.addLayer(image, imageVisParam, 'True Color');
+
+var classname = water.merge(vegetation).merge(urban);
+print(classname);
+
+var bands = ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'];
+var training = image.select(bands).sampleRegions({
+  collection: classname,
+  properties: ['landcover'],
+  scale: 30
+});
+
+print(training);
+
+
+var classifier = ee.Classifier.smileRandomForest(100).train({
+  features: training,
+  classProperty: 'landcover',
+  inputProperties: bands
+});
+
+var classified = image.select(bands).classify(classifier);
+Map.centerObject(classname, 11);
+Map.addLayer(classified,
+{min: 0, max: 2, palette: ['#0e58bd', '#89d209', '#9bb3f0']},
+'Random Forest Classification');
+
+// Accuracy assessment
+
+var random_column = training.randomColumn();
+var split = 0.7; // Define the split ratio
+var trainingData = random_column.filter(ee.Filter.lt('random', split)); // 70% for training
+var testingData = random_column.filter(ee.Filter.gte('random', split)); // 30% for testing
+
+print('Training Data:', trainingData);
+print('Testing Data:', testingData);
+
+// Train classifier on training data
+var trainedClassifier = ee.Classifier.smileRandomForest(100).train({
+  features: trainingData,
+  classProperty: 'landcover',
+  inputProperties: bands
+});
+
+// Classify image
+var classifiedImage = image.select(bands).classify(trainedClassifier);
+
+// Test accuracy
+var testAccuracy = testingData.classify(trainedClassifier);
+var confusionMatrix = testAccuracy.errorMatrix('landcover', 'classification');
+
+print('Confusion Matrix:', confusionMatrix);
+print('Overall Accuracy:', confusionMatrix.accuracy());
+print('Kappa Coefficient:', confusionMatrix.kappa());
+
+
+// EXTRACT URBAN AREAS FROM CLASSIFIED IMAGE
+
+
+// Assuming urban areas are labeled as class '2' (modify if needed)
+// var urbanClass = classifiedImage.eq(2); // Creates a binary mask (1 for urban, 0 for others)
+
+// // Add urban areas to the map (for visualization)
+// Map.addLayer(urbanClass.updateMask(urbanClass), {palette: 'red'}, 'Urban Areas');
+
+// CALCULATE URBAN AREA (IN SQ. KM)
+
+// Compute area in square meters
+// var pixelArea = ee.Image.pixelArea();
+// var urbanArea = urbanClass.multiply(pixelArea);
+
+// // Sum the total urban area within the AOI
+// var urbanStats = urbanArea.reduceRegion({
+//   reducer: ee.Reducer.sum(),
+//   geometry: aoi,  // Added AOI to limit calculation
+//   scale: 30,
+//   maxPixels: 1e13
+// });
+
+// // Convert to square kilometers
+// var urbanAreaSqKm = ee.Number(urbanStats.get('classification')).divide(1e6);
+// print('Total Urban Area (sq. km):', urbanAreaSqKm);
+
+
+// CONVERT URBAN MASK TO VECTOR (SHAPEFILE)
+
+
+// Added "geometry: aoi" to reduceToVectors()
+// var urbanVector = urbanClass.selfMask().reduceToVectors({
+//   geometry: aoi, // Restrict vectorization to AOI
+//   geometryType: 'polygon',
+//   reducer: ee.Reducer.countEvery(),
+//   scale: 30,
+//   maxPixels: 1e13
+// });
+
+// // Add vector layer to map
+// Map.addLayer(urbanVector, {color: 'red'}, 'Urban Vector');
+
+
+// EXPORT URBAN AREA AS A SHAPEFILE
+
+
+// // Export to Google Drive as a shapefile
+// Export.table.toDrive({
+//   collection: urbanVector,
+//   description: 'Urban_Areas_2024',
+//   fileFormat: 'SHP'
+// });
+
+
+// Export.image.toDrive({
+//   image: classified,
+//   description:'landcover',
+//   folder: 'landslide',
+//   scale: 30,
+//   maxPixels: 1e13,
+//   region: aoi,
+//   fileFormat: 'GeoTIFF'
+// })
+
+
+// Reclassify to Urban (1) and Non-Urban (0)
+
+// var binaryClass_2024 = classifiedImage.eq(2)  // Class 2 = Urban
+//                         .rename('Urban_NonUrban');
+
+// Map.addLayer(binaryClass_2024, {min: 0, max: 1, palette: ['white', 'red']}, 'Urban vs Non-Urban 2015');
+
+
+// Export Binary Classified Image (GeoTIFF)
+
+Export.image.toDrive({
+  image: classifiedImage,
+  description: 'Binary_Urban_NonUrban_2024',
+  folder: 'GEE_Exports',
+  fileNamePrefix: 'Classification_2024',
+  region: aoi.geometry(),
+  scale: 30,
+  maxPixels: 1e13
+});
